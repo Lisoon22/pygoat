@@ -38,22 +38,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the fork's Dockerfile
         run: docker build -f Dockerfile -t mytestapp:latest .
-      - name: Check Docker Hub configuration
+      - name: Sign in to Docker Hub
+        shell: bash
         env:
-          SCOUT_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          SCOUT_TOKEN: ${{ secrets.DOCKERHUB_PASSWORD }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
         run: |
-          if [[ -z "$SCOUT_USER" || -z "$SCOUT_TOKEN" ]]; then
-            echo '::error::Set DOCKERHUB_USERNAME and DOCKERHUB_PASSWORD in repository Actions secrets.'
-            exit 1
-          fi
+          printf '%s' "$DOCKERHUB_PASSWORD" | docker login --username "${DOCKERHUB_USERNAME,,}" --password-stdin
       - name: Scan local image for Critical and High CVEs
         uses: docker/scout-action@v1.15.1
         with:
           command: quickview,cves
           image: local://mytestapp:latest
-          dockerhub-user: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub-password: ${{ secrets.DOCKERHUB_PASSWORD }}
           only-severities: critical,high
           sarif-file: scout-report.sarif
           exit-code: true
