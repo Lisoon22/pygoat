@@ -58,13 +58,12 @@ def upload_yaml():
 
     if file and allowed_file(file.filename):
         try:
-            # Intentionally vulnerable YAML loading
-            data = yaml.load(file.stream, Loader=yaml.Loader)
-            return render_template("result.html", content=data, filename=file.filename)
-        except Exception as e:
-            flash(f"Error processing file: {str(e)}")
-            logger.error(f"Error processing YAML file {file.filename}: {str(e)}")
+            data = yaml.safe_load(file.stream)
+        except yaml.YAMLError:
+            flash("Invalid YAML document")
+            logger.info("Rejected an invalid YAML upload")
             return redirect(url_for("lab1"))
+        return render_template("result.html", content=data, filename=file.filename)
 
     flash("Invalid file type")
     return redirect(url_for("lab1"))
