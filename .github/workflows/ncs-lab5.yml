@@ -1,0 +1,129 @@
+name: NCS Lab 5
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sast_scan:
+    name: Bandit SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install bandit==1.8.6
+      - name: Scan Python code
+        run: bandit -ll -ii -r . -f json -o bandit-report.json
+      - name: Count findings
+        if: always() && hashFiles('bandit-report.json') != ''
+        run: |
+          jq '{total:(.results|length), high:([.results[]|select(.issue_severity=="HIGH")]|length), medium:([.results[]|select(.issue_severity=="MEDIUM")]|length), yaml_handler:([.results[]|select(.test_id=="B506" and (.filename|endswith("/a9_uckv_lab/app.py")))]|length), errors:(.errors|length)}' bandit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-findings
+          path: bandit-report.json
+          if-no-files-found: error
+
+  image_scan:
+    name: Docker Scout image scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the fork's Dockerfile
+        run: docker build -f Dockerfile -t mytestapp:latest .
+      - name: Check Docker Hub configuration
+        env:
+          SCOUT_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          SCOUT_TOKEN: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: |
+          if [[ -z "$SCOUT_USER" || -z "$SCOUT_TOKEN" ]]; then
+            echo '::error::Set DOCKERHUB_USERNAME and DOCKERHUB_PASSWORD in repository Actions secrets.'
+            exit 1
+          fi
+      - name: Scan local image for Critical and High CVEs
+        uses: docker/scout-action@v1.15.1
+        with:
+          command: quickview,cves
+          image: local://mytestapp:latest
+          dockerhub-user: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          only-severities: critical,high
+          sarif-file: scout-report.sarif
+          exit-code: true
+          write-comment: false
+      - name: Count SARIF results
+        if: always() && hashFiles('scout-report.sarif') != ''
+        run: jq '{results:([.runs[].results[]?]|length), rules:([.runs[].tool.driver.rules[]?]|length)}' scout-report.sarif
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-scout-findings
+          path: scout-report.sarif
+          if-no-files-found: error
+
+  dast_scan:
+    name: ZAP passive DAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build and start PyGoat from the fork
+        run: |
+          docker build -f Dockerfile -t pygoat-lab5:local .
+          docker run -d --name pygoat-lab5 -p 127.0.0.1:8000:8000 pygoat-lab5:local \
+            sh -ec 'python manage.py migrate --noinput && exec gunicorn --bind 0.0.0.0:8000 --workers 1 pygoat.wsgi:application'
+      - name: Check readiness and inspect three public responses
+        run: bash .github/lab5/run-zap.sh reports
+      - name: Collect application log
+        if: always()
+        run: |
+          mkdir -p reports
+          if docker container inspect pygoat-lab5 >/dev/null 2>&1; then
+            docker logs pygoat-lab5 > reports/server.log 2>&1
+            docker rm -f pygoat-lab5
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-findings
+          path: |
+            reports/zap-report.json
+            reports/zap-report.html
+            reports/zap-console.log
+            reports/http-status.tsv
+            reports/server.log
+          if-no-files-found: error
+
+  dependency_scan:
+    name: Python dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pip-audit==2.9.0
+      - name: Match the pinned Python requirements to published advisories
+        run: pip-audit --disable-pip --no-deps -r requirements.txt -f json -o dependencies.json
+      - name: Count vulnerable package records
+        if: always() && hashFiles('dependencies.json') != ''
+        run: |
+          jq '{pins:(.dependencies|length), affected:([.dependencies[]|select((.vulns|length)>0)]|length), advisories:([.dependencies[].vulns[]]|length)}' dependencies.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-findings
+          path: dependencies.json
+          if-no-files-found: error
